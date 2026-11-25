@@ -4,6 +4,7 @@ Cinco etapas convolucionales, contexto global y tres cabezas independientes.
 No importa backbones, necks, cabezas ni pesos de bibliotecas de detección.
 """
 import math
+from bisect import bisect_right
 
 import torch
 from torch import nn
@@ -11,6 +12,8 @@ from torch.nn import functional as F
 
 ARCHITECTURE = 'VisionLocaliza-D2'
 STRIDES = (8, 16, 32)
+PYRAMID_ARCHITECTURE = 'VisionLocaliza-D3'
+PYRAMID_STRIDES = (4, 8, 16, 32)
 
 
 def conv(incoming, outgoing, kernel=3, stride=1, dilation=1):
@@ -36,6 +39,8 @@ class LocalizationHead(nn.Module):
 
 
 class VisionLocaliza(nn.Module):
+    strides = STRIDES
+
     def __init__(self):
         super().__init__()
         self.stem=conv(3,16,kernel=5,stride=2)
@@ -66,6 +71,50 @@ class VisionLocaliza(nn.Module):
         return [head(features,context) for head,features in zip(self.heads,(small,medium,large))]
 
 
+class DetailHead(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.mix = nn.Sequential(nn.Conv2d(channels, channels, 3, padding=1, groups=channels, bias=False),
+                                 nn.BatchNorm2d(channels), nn.ReLU(inplace=True), conv(channels, channels, 1))
+        self.output = nn.Conv2d(channels, 6, 1)
+        nn.init.normal_(self.output.weight, std=.01)
+        nn.init.zeros_(self.output.bias)
+        with torch.no_grad():
+            self.output.bias[0] = math.log(.01 / .99)
+
+    def forward(self, features):
+        return self.output(self.mix(features))
+
+
+class VisionLocalizaPyramid(nn.Module):
+    """Fuse coarse context into a learned heatmap at strides 4, 8, 16 and 32."""
+
+    strides = PYRAMID_STRIDES
+
+    def __init__(self):
+        super().__init__()
+        self.stem = conv(3, 16, 5, stride=2)
+        self.detail = nn.Sequential(conv(16, 24, stride=2), conv(24, 24))
+        self.small = nn.Sequential(conv(24, 48, stride=2), conv(48, 48))
+        self.medium = nn.Sequential(conv(48, 80, stride=2), conv(80, 80))
+        self.large = nn.Sequential(conv(80, 112, stride=2), conv(112, 112, dilation=2))
+        self.lateral = nn.ModuleList(conv(incoming, 24, 1) for incoming in (24, 48, 80, 112))
+        self.heads = nn.ModuleList(DetailHead(24) for _ in self.strides)
+
+    def forward(self, images):
+        detail = self.detail(self.stem(images))
+        small = self.small(detail)
+        medium = self.medium(small)
+        large = self.large(medium)
+        features = [layer(value) for layer, value in zip(self.lateral, (detail, small, medium, large))]
+        for index in (2, 1, 0):
+            features[index] = features[index] + F.interpolate(features[index + 1], size=features[index].shape[-2:], mode='nearest')
+        return [head(value) for head, value in zip(self.heads, features)]
+
+
+DETECTORS = {ARCHITECTURE: VisionLocaliza, PYRAMID_ARCHITECTURE: VisionLocalizaPyramid}
+
+
 def decode_head(raw,stride):
     """Cada posición predice centro dentro de su celda y anchura/altura positivas."""
     _,_,height,width=raw.shape
@@ -87,7 +136,7 @@ def aligned_iou(first,second,generalized=False):
     return iou-(enclosing-union)/enclosing
 
 
-def make_targets(outputs,boxes):
+def make_targets(outputs,boxes,strides=STRIDES):
     """Asigna por área visible: pequeño <64 px, mediano <160 px, grande.
 
     Las cajas son anotaciones humanas transformadas; nunca se fabrican cajas.
@@ -104,8 +153,8 @@ def make_targets(outputs,boxes):
         for box in image_boxes:
             width,height=(box[2:]-box[:2]).tolist()
             size=math.sqrt(max(width*height,1e-6))
-            level=0 if size<64 else (1 if size<160 else 2)
-            stride=STRIDES[level]
+            level=bisect_right((64, 160) if strides == STRIDES else (28, 70, 160), size)
+            stride=strides[level]
             target=targets[level]
             center=(box[:2]+box[2:])/2/stride
             x=min(max(0,int(center[0])),target['heat'].shape[2]-1)
@@ -128,14 +177,14 @@ def make_targets(outputs,boxes):
     return targets,collisions
 
 
-def detection_loss(outputs,boxes=None,prepared_targets=None):
+def detection_loss(outputs,boxes=None,prepared_targets=None,strides=STRIDES):
     # Calcular las pérdidas en float32, incluso al usar autocast en la GPU.
     outputs=[o.float() for o in outputs]
-    targets,collisions=prepared_targets if prepared_targets is not None else make_targets(outputs,boxes)
+    targets,collisions=prepared_targets if prepared_targets is not None else make_targets(outputs,boxes,strides)
     zero=sum(o.sum()*0 for o in outputs)
     heat,geometry,offset,size,quality=zero,zero,zero,zero,zero
     count=sum(int(t['positive'].sum()) for t in targets)
-    for raw,target,stride in zip(outputs,targets,STRIDES):
+    for raw,target,stride in zip(outputs,targets,strides):
         positive=target['positive'];truth=target['heat']
         probability=raw[:,0].sigmoid().clamp(1e-5,1-1e-5)
         heat=heat+(-(1-probability).pow(2)*probability.log()*positive
@@ -157,15 +206,18 @@ def detection_loss(outputs,boxes=None,prepared_targets=None):
     return total,dict(losses,positive_cells=count,collisions=collisions)
 
 
-def decode_predictions(outputs,confidence=.05,max_candidates=1500):
+def decode_predictions(outputs,confidence=.05,max_candidates=1500,strides=STRIDES):
     """Devuelve cajas y puntuaciones por imagen; NMS se aplica fuera de la red."""
     results=[]
-    decoded=[decode_head(o.float(),s).permute(0,2,3,1) for o,s in zip(outputs,STRIDES)]
+    decoded=[decode_head(o.float(),s).permute(0,2,3,1) for o,s in zip(outputs,strides)]
+    scores_by_level = [o[:, 0].float().sigmoid() * o[:, 5].float().sigmoid() for o in outputs]
+    if strides == PYRAMID_STRIDES:
+        scores_by_level = [score * (score == F.max_pool2d(score[:, None], 3, 1, 1)[:, 0]) for score in scores_by_level]
     for index in range(outputs[0].shape[0]):
         all_boxes=[];all_scores=[]
-        for raw,boxes in zip(outputs,decoded):
+        for level_scores,boxes in zip(scores_by_level,decoded):
             # Presencia de centro y calidad de localización son objetivos distintos.
-            score=raw[index,0].float().sigmoid()*raw[index,5].float().sigmoid()
+            score=level_scores[index]
             mask=score>=confidence
             all_boxes.append(boxes[index][mask]);all_scores.append(score[mask])
         boxes=torch.cat(all_boxes);scores=torch.cat(all_scores)

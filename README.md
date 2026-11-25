@@ -1,13 +1,13 @@
 # Vision-IA
 
-Detector propio VisionLocaliza-D2 de una clase («residuo»), CNN propias para seis materiales, OpenCV y Streamlit. Entrenamiento desde cero, sin pesos preentrenados ni servicios externos de detección. A/B/C1b/C3 se conservan.
+Detector propio VisionLocaliza-D3 de una clase («residuo»), CNN y Transformer propios para seis materiales, OpenCV y Streamlit. Entrenamiento desde cero, sin pesos preentrenados ni servicios externos de detección. D2 y los experimentos A/B/C1b/C3 se conservan.
 
 ## Iniciar en Windows
 
-Desde `C:\Users\isamu\Desktop\Vision-IA`:
+Desde la raíz del proyecto:
 
 ```powershell
-.\.venv\Scripts\python.exe -m streamlit run app/main.py
+.\.venv\Scripts\python.exe -m streamlit run app/main.py --server.address 127.0.0.1
 ```
 
 Abre http://127.0.0.1:8501. Reinicia la terminal si había una versión anterior abierta. Dependencias: `.\.venv\Scripts\python.exe -m pip install -r requirements-app.txt`.
@@ -24,13 +24,11 @@ La cámara mantiene un recuadro punteado como guía durante la búsqueda. Si fal
 
 También puedes **Tomar foto** o **Subir imagen**. En fotografías, **Ajustar el recorte si no lo reconoce** conserva el respaldo manual. La pantalla no muestra configuración de modelos, métricas, diagnóstico ni registro de fotografías. Sus herramientas y resultados anteriores se conservan fuera del flujo normal. El video usa la cámara del navegador: autoriza su acceso y elige la webcam externa o la cámara del móvil en el selector.
 
-El componente propio `app/camera_component/` muestra video nativo del navegador y envía JPEG de hasta 640 px por el canal de Streamlit, con un solo fotograma pendiente y un máximo de cuatro envíos por segundo. La vista continúa aunque la inferencia tarde; solo devuelve una caja, que caduca si no hay respuesta reciente. No utiliza WebRTC, servidores TURN, puertos locales ni servicios de detección externos. En local se midieron 151 fotogramas de video y 20 solicitudes de reconocimiento en cinco segundos con la cámara física. Esto verifica el flujo, no la precisión con cualquier cámara. Evidencia: `runs/browser_camera/full_roundtrip.json`.
-
-Los fotogramas usan JPEG de calidad 0,90. El navegador sigue la textura del residuo entre detecciones y puede sostener la caja durante una lectura omitida. Si pierde la referencia visual o la última detección vence, vuelve a la guía y retira el resultado. La proporción de la caja sigue las dimensiones reales del video al girar el móvil.
+El componente `app/camera_component/` envía JPEG de hasta 640 px a Streamlit, con una solicitud pendiente y hasta cuatro envíos por segundo. Entre respuestas, el navegador sigue la posición y el tamaño del residuo en cada fotograma nuevo. La caja se mantiene durante las omisiones breves del detector mientras haya evidencia visual. Si se pierde esa referencia o vence la última detección, vuelve la guía.
 
 ## Desplegar en Streamlit Cloud
 
-Usa este repositorio, rama `main` y archivo `app/main.py`. `requirements.txt` instala el runtime con OpenCV headless y PyTorch CPU. Los pesos propios seleccionados están incluidos en `models/runtime/`, junto con sus hashes y procedencia; no se descargan modelos al iniciar. Los originales y el resto de experimentos permanecen separados. La cámara requiere HTTPS (incluido en Streamlit Cloud) o localhost. No se guardan los fotogramas de video. El video nativo puede ser fluido aunque el reconocimiento remoto tarde más según la red y los recursos del servidor.
+Selecciona la rama que contenga la versión preparada y `app/main.py` como archivo de entrada. `requirements.txt` instala el runtime con OpenCV headless y PyTorch CPU. La revisión debe incluir los pesos de `models/runtime/` que indica `config/app.json` y los archivos de `app/camera_component/`. La cámara usa el HTTPS de Community Cloud o localhost durante el desarrollo.
 
 ## Detector propio D2
 
@@ -40,15 +38,17 @@ La supervisión usa centros y cajas humanas, pérdida focal de presencia, GIoU, 
 
 Desde la época 76 se continúa el mismo entrenamiento con vistas cercanas de objetos anotados y recortes de contexto que no intersectan cajas humanas. Todas las cajas visibles se transforman con el recorte; no se etiqueta automáticamente la fotografía entera como un objeto. El checkpoint, configuración y código anteriores se conservan en `before_closeups/`, `source/` y `source_closeups/` dentro de la ejecución. No se reutilizan pesos de D1 ni de los clasificadores.
 
-**D1 era la arquitectura oficial YOLOv8 nano** de Ultralytics y no cumple la condición de arquitectura propia. Se detuvo tras 45 épocas. Se eliminaron del proyecto local su entrenador, configuración, notebook y dependencia Ultralytics; la aplicación solo carga D2. Las anotaciones, manifiestos y métricas se conservan. Los dos checkpoints de `runs/detector_D1/archived_epoch45/` siguen pendientes de eliminación porque la revisión automática bloqueó su borrado. No borrar la carpeta remota completa: contiene el archivo TACO compartido que utiliza el notebook propio.
+**D1 era la arquitectura oficial YOLOv8 nano** de Ultralytics y no cumple la condición de arquitectura propia. Se detuvo tras 45 épocas. Se eliminaron del proyecto local su entrenador, configuración, notebook y dependencia Ultralytics. La aplicación carga las arquitecturas propias registradas. Las anotaciones, manifiestos y métricas se conservan. Los dos checkpoints de `runs/detector_D1/archived_epoch45/` siguen pendientes de eliminación porque la revisión automática bloqueó su borrado. No borrar la carpeta remota completa: contiene el archivo TACO compartido que utiliza el notebook propio.
 
 **Resultado original D2 (checkpoint anterior):** terminó en la época 185 y se seleccionó la 145, aprendida con TACO (1.106 train / 197 val / 197 test). Con confianza 0,25 y NMS 0,45 obtuvo en la única prueba final: Precision **42,82 %**, Recall **41,23 %**, mAP50 **36,31 %** y mAP50:95 **17,90 %**. Son cifras históricas de ese checkpoint, no del refinamiento actual. Métricas: `runs/detector_D2/D2_20261123_222215/test_final/metrics.json`.
 
-**Refinamiento activo:** misma arquitectura y origen aleatorio. Desde nuestra selección conservadora anterior se continuó en T4 entrenando únicamente cajas y calidad, con extractores, presencia y estadísticas BatchNorm fijos. Se penalizan propuestas parciales según su IoU con la caja humana completa, y algunos aumentos suavizan estampados interiores sin cambiar los bordes. Se seleccionó la época 2; conserva las respuestas de materiales de las fotos disponibles. Configuración: `config/detector_D2_box_only.json`; entrenamiento: `scripts/train_detector_refine.py`. La combinación propia anterior y todas las variantes descartadas se conservan.
+**Refinamiento de los pesos D2:** misma arquitectura y origen aleatorio. Desde nuestra selección conservadora anterior se continuó en T4 entrenando únicamente cajas y calidad, con extractores, presencia y estadísticas BatchNorm fijos. Se penalizan propuestas parciales según su IoU con la caja humana completa, y algunos aumentos suavizan estampados interiores sin cambiar los bordes. Se seleccionó la época 2. Configuración de entrenamiento en `config/detector_D2_box_only.json` y `scripts/train_detector_refine.py`. La política de inferencia está en `config/app.json`.
 
 Selección por validación: TACO conserva 197 imágenes y MJU 36 imágenes / 42 objetos, con polígonos humanos contrastados con máscaras y auditoría de similitud. No se abre test en este refinamiento. Con confianza 0,25 / NMS 0,45, TACO obtiene Precision **53,89 %**, Recall **29,13 %**, mAP50 **31,27 %**, mAP50:95 **16,15 %**; MJU obtiene **20,97 %**, **30,95 %**, **19,21 %**, **10,17 %**, respectivamente. AP coincide con pycocotools; mediana CPU **38,5 ms**, 2 hilos. Entre las 75 botellas transparentes de val, las propuestas asociadas que cubren ≥85 % de la caja humana y tienen IoU ≥0,5 pasan de **17 a 21**; en 56 empaques impresos, de **16 a 18**. Son diagnósticos de cobertura, no aciertos de material ni garantía de resolver cada etiqueta. Procedencia: `models/runtime/manifest.json`; resultados: `runs/detector_D2_shape/`.
 
-El material usa una candidata separada de la misma CNN propia, continuada desde B en T4 con recortes de cajas humanas TACO y repaso de sus imágenes train originales. Las clases añadidas se muestrean de forma equilibrada. B conserva exactamente sus pesos y responde cuando la candidata no alcanza 0,40 de confianza; no se añaden opciones a la interfaz. Son dos CNN de 89.686 parámetros, con una segunda inferencia solo en casos dudosos. En 884 imágenes de val originales, este flujo pasa de 74,55 % / 76,10 % a **77,38 % / 78,58 %** de accuracy / Macro F1. En 63 recortes val de botellas transparentes admitidos por la auditoría, los aciertos de material pasan de **7 a 10**. Sobre objetos localizados con IoU ≥0,5 y material conocido, pasa de **15,0 % a 22,86 %**. No se atribuyen al flujo protegido los resultados mayores de la candidata sin respaldo, que empeoraba las fotos reales.
+La referencia histórica de material combinaba la CNN refinada en recortes TACO con B cuando la refinada quedaba por debajo de 0,40 de confianza. Ambas CNN tenían 89.686 parámetros. En las 884 imágenes de validación original, la política histórica pasó de 74,55 % / 76,10 % a **77,38 % / 78,58 %** de accuracy / Macro F1. En 63 recortes de botellas transparentes pasó de **7 a 10** aciertos y, entre los objetos asociados por IoU ≥0,5 con material conocido, de **15,0 % a 22,86 %**. El entrenador de la CNN refinada está en `scripts/train_material_candidate.py`.
+
+La aplicación fusiona dos vistas de VisionLocaliza-D3 a 512 px. La CNN refinada y la residual aportan el 55 % y el 45 % de la predicción inicial de material. **VisionMaterial-Transformer** refina esa predicción con cuatro bloques de atención, cuatro cabezas y dos tokens de lectura sobre recortes de 160 px. La fusión conserva las predicciones de vidrio de las CNN y las de papel o cartón cuando ambas CNN coinciden. En la misma validación de 409 objetos, el recall conjunto pasó de **23,72 % a 28,36 %**. El entrenamiento y el ajuste de fusión usan datos de entrenamiento, incluidos 847 recortes de D3 emparejados con anotaciones humanas de TACO train. La procedencia se guarda en `models/runtime/manifest.json`.
 
 Persisten omisiones, cajas parciales y falsos positivos. En las cuatro fotos propias detecta los cuatro objetos y conserva los tres materiales correctos de B; la botella transparente grande de una foto sigue confundiéndose con cartón. La mejora es moderada y no resuelve todas las etiquetas ni los reflejos. El video físico se verificó previamente en local; la precisión con la cámara del usuario requiere comprobarse en sus escenas. La candidata, los clasificadores originales, los checkpoints descartados y los resultados se conservan. Entrenador: `scripts/train_material_candidate.py`; procedencia y política: `models/runtime/manifest.json`. La sincronización actual usa Drive G: y Colab cuenta 0.
 
@@ -107,7 +107,7 @@ El ejemplo prepara la configuración de C1b, el mejor candidato por validación.
 
 Solo para reproducir C2/C3, prepara su suplemento con `python -m scripts.prepare_materials` y selecciona `--config config/train_C2.json` o `config/train_C3.json` al exportar. No se mezclan automáticamente los experimentos.
 
-Los checkpoints nuevos se pueden cargar desde **Opciones → Checkpoint y CPU**, sin cambiar los originales. Por ejemplo: `runs/synced/C/C1b_20261121_residual192_seed42/best_model.pth`. Cambiar de candidato no demuestra fiabilidad con cámara; B permanece como opción inicial porque los nuevos fallaron más en las fotos proporcionadas.
+La selección activa se define en `config/app.json`. El checkpoint C1b sigue disponible en `runs/synced/C/C1b_20261121_residual192_seed42/best_model.pth` para comparación. Las métricas de validación corresponden a imágenes guardadas.
 
 ```powershell
 .\.venv\Scripts\python.exe -m scripts.import_compact --run-name C1b_20261121_residual192_seed42

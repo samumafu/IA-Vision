@@ -21,7 +21,11 @@ models/**
 !models/runtime/
 !models/runtime/classifier_B.pth
 !models/runtime/classifier_materials.pth
+!models/runtime/classifier_scene.pth
+!models/runtime/classifier_scene_mixed.pth
+!models/runtime/classifier_transformer.pth
 !models/runtime/detector_D2.pth
+!models/runtime/detector_D3.pth
 !models/runtime/manifest.json
 !models/runtime/reserved_hashes.json
 # Entornos y Python

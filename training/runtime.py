@@ -10,6 +10,8 @@ import torch
 
 from training.data import resolve_path
 from training.model import ARCHITECTURE, VisionCNN
+from training.material_encoder import ARCHITECTURE as ENCODER_ARCHITECTURE, IMAGE_SIZES as ENCODER_SIZES, MaterialEncoder
+from training.material_transformer import ARCHITECTURE as TRANSFORMER_ARCHITECTURE, IMAGE_SIZES, MaterialTransformer
 from utils.config import CLASSES, PROJECT_ROOT
 
 
@@ -101,7 +103,9 @@ def load_checkpoint(path, device="cpu"):
         raise ValueError("Se necesita el checkpoint completo de Vision-IA, con etiquetas y normalizacion originales; no basta un state_dict sin metadatos.")
     architecture, image_size = checkpoint["architecture"], checkpoint["image_size"]
     if not ((architecture == ARCHITECTURE and image_size == 128) or
-            (architecture == "VisionResidual-v2" and image_size in (160, 192))):
+            (architecture == "VisionResidual-v2" and image_size in (160, 192)) or
+            (architecture == TRANSFORMER_ARCHITECTURE and image_size in IMAGE_SIZES) or
+            (architecture == ENCODER_ARCHITECTURE and image_size in ENCODER_SIZES)):
         raise ValueError("Arquitectura o resolución de checkpoint incompatible.")
     if checkpoint["classes"] != list(CLASSES):
         raise ValueError(f"Orden de clases incompatible. Esperado: {list(CLASSES)}; checkpoint: {checkpoint['classes']}. No se reasignan etiquetas automaticamente.")
@@ -110,8 +114,8 @@ def load_checkpoint(path, device="cpu"):
     config = checkpoint["config"]
     if not isinstance(config, dict) or config.get("image_size") != image_size or "normalization" not in config:
         raise ValueError("El checkpoint no conserva la configuracion de entrada original.")
-    if architecture == "VisionResidual-v2" and (config.get("architecture") != architecture or config.get("preprocessing") not in ("letterbox-v2","resize-v2")):
-        raise ValueError("Faltan la arquitectura y el preprocesamiento originales del modelo residual.")
+    if architecture != ARCHITECTURE and (config.get("architecture") != architecture or config.get("preprocessing") not in ("letterbox-v2","resize-v2")):
+        raise ValueError("Faltan la arquitectura y el preprocesamiento originales del modelo.")
     norm = config["normalization"]
     if not isinstance(norm, dict) or any(not isinstance(norm.get(key), (list, tuple)) or len(norm[key]) != 3 for key in ("mean", "std")):
         raise ValueError("Faltan media y desviacion RGB originales del checkpoint.")
@@ -123,6 +127,11 @@ def load_checkpoint(path, device="cpu"):
     if architecture == "VisionResidual-v2":
         from training.compact import CompactCNN
         model = CompactCNN(image_size, dropout, config.get("channels",(24,48,96,160)), config.get("pooling","avg"))
+    elif architecture in (TRANSFORMER_ARCHITECTURE, ENCODER_ARCHITECTURE):
+        provenance = checkpoint.get('provenance', {})
+        if provenance.get('initialization') != 'random_from_scratch' or provenance.get('pretrained') is not False:
+            raise ValueError('El Transformer requiere un checkpoint propio entrenado desde cero.')
+        model = MaterialTransformer(config) if architecture == TRANSFORMER_ARCHITECTURE else MaterialEncoder(config)
     else:
         model = VisionCNN(dropout=dropout)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)

@@ -52,6 +52,24 @@ class BrowserCameraTests(unittest.TestCase):
         self.assertEqual(recognition.response['detection']['track_id'],first['track_id'])
         self.assertEqual(classifier.calls,2)
 
+    def test_visual_track_reconnects_after_two_model_misses(self):
+        recognition=BrowserRecognition()
+        classifier=FakeService()
+        detector=Detector()
+        recognition.consume(payload(),detector,classifier)
+        active_id=recognition.response['detection']['track_id']
+        moved=Detection((83,23,122,92),.21,Region((72,14,132,101),'test'))
+        hint={'track_id':active_id,'box':[83/160,23/120,122/160,92/120]}
+        for sequence in (2,3):
+            detector.detect=lambda _,confidence=None: []
+            recognition.consume(dict(payload(sequence=sequence),tracking=hint),detector,classifier)
+            self.assertIsNone(recognition.response['detection'])
+            self.assertEqual(classifier.calls,1)
+        detector.detect=lambda _,confidence=None: [moved]
+        recognition.consume(dict(payload(sequence=4),tracking=hint),detector,classifier)
+        self.assertEqual(recognition.response['detection']['track_id'],active_id)
+        self.assertEqual(classifier.calls,2)
+
     def test_zoom_requires_repeated_detection_and_maps_box_to_original_frame(self):
         recognition=BrowserRecognition()
         classifier=FakeService()

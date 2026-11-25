@@ -44,15 +44,20 @@ const video=$('video'),overlay=$('overlay'),pen=overlay.getContext('2d');
 const capture=document.createElement('canvas'),capturePen=capture.getContext('2d');
 const motion=document.createElement('canvas'),motionPen=motion.getContext('2d',{willReadFrequently:true});
 let media=null,streamId='',sequence=0,pending=null,lastSent=0,opening=false,height=0;
-let track=null,displayBox=null,videoTime=-1,lastMotion=0,resultKey='';
+let track=null,displayBox=null,lastVideoFrame=-1,presentedFrames=0,resultKey='';
 let enabled=true,interval=250;
 let guideBox=[.16,.10,.84,.90];
+const hasVideoFrameCallback=typeof video.requestVideoFrameCallback==='function';
+if(hasVideoFrameCallback){
+  const markFrame=()=>{presentedFrames++;video.requestVideoFrameCallback(markFrame);};
+  video.requestVideoFrameCallback(markFrame);
+}
 function post(type,details){window.parent.postMessage({isStreamlitMessage:true,type,...details},'*');}
 function send(value){post('streamlit:setComponentValue',{value,dataType:'json'});}
 function resize(){const value=Math.ceil(document.body.scrollHeight);if(value!==height){height=value;post('streamlit:setFrameHeight',{height:value});}}
 function notice(text,error=false){$('notice').textContent=text;$('notice').className=error?'error':'';resize();}
 function showMaterial(now=performance.now()) {
-  const searching=Boolean(media && (!track || (track.misses && !track.template)));
+  const searching=Boolean(media && !track);
   const material=searching ? null : track?.detection.material;
   let label=material?.label ?? '';
   if(track && !material)label=now-track.startedAt<2000 ? 'Identificando material…' : 'Material sin confirmar';
@@ -84,7 +89,7 @@ async function devices(){
 function stop(report=true){
   const previous=streamId;
   if(media)media.getTracks().forEach(track=>track.stop());
-  media=null;video.srcObject=null;pending=null;opening=false;videoTime=-1;lastMotion=0;
+  media=null;video.srcObject=null;pending=null;opening=false;lastVideoFrame=-1;
   clearTrack();showMaterial();
   pen.clearRect(0,0,overlay.width,overlay.height);$('empty').hidden=false;
   if(report&&previous)send({event:'stopped',stream_id:previous,sequence:++sequence});
@@ -110,8 +115,8 @@ async function start(){
     notice(messages[error.name]||'No se pudo abrir la cámara. Comprueba su conexión y vuelve a intentar.',true);
   }
 }
-function motionFrame() {
-  motionPen.drawImage(video,0,0,motion.width,motion.height);
+function motionFrame(source=video) {
+  motionPen.drawImage(source,0,0,motion.width,motion.height);
   const rgba=motionPen.getImageData(0,0,motion.width,motion.height).data;
   const pixels=new Uint8Array(motion.width*motion.height);
   for(let i=0;i<pixels.length;i++) {
@@ -125,18 +130,23 @@ function applyDetection(detection, request, now) {
   const age=now-request.sent;
   if(age>=BOX_MAX_AGE || !request.frame)return;
   if(!detection) {
-    if(track && ++track.misses>=2)clearTrack();
+    if(track && !track.template)clearTrack();
     return;
   }
   const candidate=new CameraBoxTrack(detection,request.frame,request.sent);
-  if(!candidate.isFresh(now))return;
   if(candidate.template) {
-    for(const frame of request.frames) {
-      candidate.unmatchedFrames=candidate.follow(frame)?0:candidate.unmatchedFrames+1;
+    let matched=true;
+    for(const {frame,capturedAt} of request.frames) {
+      matched=candidate.follow(frame,capturedAt);
     }
-    // Use the newest visible frame to verify a delayed reply, even if intermediate frames failed.
-    if(candidate.unmatchedFrames)return;
+    if(!matched)return;
+  } else if(track?.template && track.isFresh(now) && track.detection.track_id===detection.track_id) {
+    // Keep the existing visual reference when this detector crop has too little texture.
+    track.detection={...track.detection,material:detection.material};
+    track.observedAt=request.sent;
+    return;
   }
+  if(!candidate.isFresh(now))return;
   const sameObject=track?.detection.track_id===detection.track_id && displayBox &&
     boxOverlap(displayBox,candidate.box)>=.3;
   if(sameObject)candidate.startedAt=track.startedAt;
@@ -151,21 +161,18 @@ function tick(now){
       const scale=Math.min(1,192/Math.max(video.videoWidth,video.videoHeight));
       motion.width=Math.max(1,Math.round(video.videoWidth*scale));
       motion.height=Math.max(1,Math.round(video.videoHeight*scale));
-      clearTrack();videoTime=-1;
+      clearTrack();lastVideoFrame=-1;
       if(pending)pending.frame=null;
       $('stage').style.aspectRatio=`${video.videoWidth}/${video.videoHeight}`;resize();
     }
     const canSend=!pending&&now-lastSent>=interval&&enabled&&!document.hidden&&
       video.videoWidth>=16&&video.videoHeight>=16;
-    if(!document.hidden && now-lastMotion>=30 && video.currentTime!==videoTime && (track || pending?.frame || canSend)) {
-      videoTime=video.currentTime;
-      lastMotion=now;
+    const frameId=hasVideoFrameCallback ? presentedFrames : video.currentTime;
+    if(!document.hidden && frameId!==lastVideoFrame && (track || pending?.frame)) {
+      lastVideoFrame=frameId;
       const currentFrame=motionFrame();
-      if(pending?.frame && now-pending.sent<BOX_MAX_AGE)pending.frames.push(currentFrame);
-      if(track?.template) {
-        track.unmatchedFrames=track.follow(currentFrame)?0:track.unmatchedFrames+1;
-        if(track.unmatchedFrames>=2)clearTrack();
-      }
+      if(pending?.frame && now-pending.sent<BOX_MAX_AGE)pending.frames.push({frame:currentFrame,capturedAt:now});
+      if(track?.template)track.follow(currentFrame,now);
     }
     if(track && !track.isFresh(now))clearTrack();
     showMaterial(now);
@@ -174,7 +181,7 @@ function tick(now){
       displayBox=displayBox ? displayBox.map((value,i)=>value+.55*(track.box[i]-value)) : track.box;
     }
     const [x1,y1,x2,y2]=displayBox ?? guideBox;
-    const isGuide=!track || (track.misses && !track.template);
+    const isGuide=!track;
     const material=isGuide ? null : track.detection.material;
     pen.lineWidth=Math.max(2,overlay.width/320);
     pen.strokeStyle=material?'#157e75':'#d78c14';
@@ -190,9 +197,11 @@ function tick(now){
       capture.width=Math.round(video.videoWidth*scale);capture.height=Math.round(video.videoHeight*scale);
       capturePen.drawImage(video,0,0,capture.width,capture.height);
       const image=capture.toDataURL('image/jpeg',.90).split(',')[1];
-      const frame=motionFrame();
+      const frame=motionFrame(capture);
+      const tracking=track?.template && now-track.lastMatch<=80 && track.isFresh(now)
+        ? {track_id:track.detection.track_id,box:track.box} : null;
       pending={sequence:++sequence,sent:now,frame,frames:[]};lastSent=now;
-      send({event:'frame',stream_id:streamId,sequence,image});
+      send({event:'frame',stream_id:streamId,sequence,image,tracking});
     }
     if(pending&&now-pending.sent>12000){clearTrack();notice('La conexión está tardando. Detén y vuelve a activar la cámara.',true);}
   }

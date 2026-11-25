@@ -1,9 +1,11 @@
 """CNN propia y recortes explícitos; el detector neuronal vive en app.detector."""
 import hashlib
 import io
+import json
+from pathlib import Path
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -90,7 +92,9 @@ def annotate_region(rgb, region):
 
 
 class InferenceService:
-    def __init__(self, checkpoint, cpu_threads=2, candidate_checkpoint=None, candidate_threshold=.4):
+    def __init__(self, checkpoint, cpu_threads=2, candidate_checkpoint=None, candidate_threshold=.4,
+                 candidate_weight=None, refiner_checkpoint=None, refiner_weight=None,
+                 refiner_preserve=(), refiner_calibration=None, refiner_preserve_consensus=()):
         if not 1 <= cpu_threads <= 4:
             raise ValueError("Usa entre uno y cuatro hilos de CPU.")
         torch.set_num_threads(cpu_threads)
@@ -104,13 +108,66 @@ class InferenceService:
         self._lock = threading.Lock()
         self.candidate=None
         self.candidate_threshold=float(candidate_threshold)
+        self.candidate_weight=None if candidate_weight is None else float(candidate_weight)
+        if self.candidate_weight is not None and (candidate_checkpoint is None or not 0<self.candidate_weight<1):
+            raise ValueError('La combinación requiere un segundo checkpoint y un peso entre cero y uno.')
         self.candidate_checkpoint_sha256=None
         if candidate_checkpoint is not None:
-            if not 0<self.candidate_threshold<=1:raise ValueError('Confianza candidata inválida.')
+            if self.candidate_weight is None and not 0<self.candidate_threshold<=1:
+                raise ValueError('Confianza candidata inválida.')
             self.candidate=InferenceService(candidate_checkpoint,cpu_threads)
             if self.candidate.classes!=self.classes:raise ValueError('Clases candidatas incompatibles.')
             self.candidate_checkpoint_sha256=self.candidate.checkpoint_sha256
             self.parameter_count+=self.candidate.parameter_count
+        self.refiner = None
+        self.refiner_checkpoint_sha256 = None
+        if refiner_checkpoint is not None:
+            if refiner_weight is None or not 0 < float(refiner_weight) <= 1:
+                raise ValueError('El refinador requiere un peso mayor que cero y hasta uno.')
+            self.refiner = InferenceService(refiner_checkpoint, cpu_threads)
+            if self.refiner.classes != self.classes:
+                raise ValueError('Clases incompatibles en el refinador.')
+            self.refiner_weight = float(refiner_weight)
+            self.refiner_preserve = frozenset(refiner_preserve)
+            self.refiner_preserve_consensus = frozenset(refiner_preserve_consensus)
+            if not (self.refiner_preserve | self.refiner_preserve_consensus) <= set(self.classes):
+                raise ValueError('Materiales inválidos en el refinador.')
+            self.refiner_checkpoint_sha256 = self.refiner.checkpoint_sha256
+            self.parameter_count += self.refiner.parameter_count
+            self.refiner_calibration = None
+            if refiner_calibration:
+                calibration = json.loads(Path(refiner_calibration).read_text(encoding='utf-8'))
+                expected = {'refined': self.checkpoint_sha256, 'scene': self.candidate_checkpoint_sha256,
+                            'transformer': self.refiner_checkpoint_sha256}
+                if (calibration.get('classes') != list(self.classes) or calibration.get('checkpoints') != expected or
+                        calibration.get('scene_weight') != self.candidate_weight or calibration.get('test_used') is not False):
+                    raise ValueError('La calibración no corresponde a los checkpoints activos.')
+                matrix = np.asarray(calibration['matrix'], dtype=np.float64)
+                bias = np.asarray(calibration['bias'], dtype=np.float64)
+                count = len(self.classes)
+                if (matrix.shape != (2 * count, count) or bias.shape != (count,) or
+                        not np.isfinite(matrix).all() or not np.isfinite(bias).all()):
+                    raise ValueError('La calibración tiene coeficientes inválidos.')
+                self.refiner_calibration = matrix, bias
+
+    def _refine(self, rgb, reading, started, agreement=None):
+        if (self.refiner is None or reading.material in self.refiner_preserve or
+                (agreement == reading.material and agreement in self.refiner_preserve_consensus)):
+            return reading
+        refinement = self.refiner.classify(rgb, region=reading.region)
+        proposed = refinement.probabilities
+        if self.refiner_calibration is not None:
+            matrix, bias = self.refiner_calibration
+            inputs = [p[label] for p in (reading.probabilities, proposed) for label in self.classes]
+            logits = np.log(np.clip(inputs, 1e-6, 1)) @ matrix + bias
+            values = np.exp(logits - logits.max())
+            proposed = dict(zip(self.classes, (values / values.sum()).tolist()))
+        weight = self.refiner_weight
+        probabilities = {label: (1 - weight) * reading.probabilities[label] + weight * proposed[label]
+                         for label in self.classes}
+        material = max(probabilities, key=probabilities.get)
+        return replace(reading, material=material, confidence=probabilities[material], probabilities=probabilities,
+                       inference_ms=(time.perf_counter() - started) * 1000, views=reading.views + refinement.views)
 
     def preprocess(self, rgb, region):
         return self.transform(Image.fromarray(crop_region(rgb, region))).unsqueeze(0)
@@ -125,7 +182,9 @@ class InferenceService:
         candidate_reading=None
         if self.candidate is not None:
             candidate_reading=self.candidate.classify(rgb,fraction,use_contours,region=region,mode=mode,manual_bounds=manual_bounds)
-            if candidate_reading.confidence>=self.candidate_threshold:return candidate_reading
+            if self.candidate_weight is None and candidate_reading.confidence>=self.candidate_threshold:
+                return self._refine(rgb, candidate_reading, started)
+            region=candidate_reading.region
         if region is None:
             result = Localizer("auto" if use_contours else mode, manual_bounds).locate(rgb)
             if result.region is None:
@@ -135,9 +194,19 @@ class InferenceService:
         tensor = self.preprocess(rgb, region)
         with self._lock, torch.inference_mode():
             probabilities = model_probabilities(self.model, tensor, self.metadata["config"])[0].tolist()
+        agreement = None
+        if candidate_reading is not None and self.candidate_weight is not None:
+            weight=self.candidate_weight
+            if self.refiner is not None and self.refiner_preserve_consensus:
+                base = self.classes[max(range(len(probabilities)), key=probabilities.__getitem__)]
+                if base == candidate_reading.material:
+                    agreement = base
+            probabilities=[(1-weight)*probability+weight*candidate_reading.probabilities[label]
+                           for label,probability in zip(self.classes,probabilities)]
         index = max(range(len(probabilities)), key=probabilities.__getitem__)
-        return Reading(self.classes[index], probabilities[index], dict(zip(self.classes, probabilities)), region,
-                       (time.perf_counter() - started) * 1000, hashlib.sha256(crop.tobytes()).hexdigest(),
-                       hashlib.sha256(tensor.numpy().tobytes()).hexdigest(), self.metadata["image_size"],
-                       (2 if self.metadata["config"].get("inference_hflip",False) else 1)+
-                       (candidate_reading.views if candidate_reading else 0))
+        reading = Reading(self.classes[index], probabilities[index], dict(zip(self.classes, probabilities)), region,
+                          (time.perf_counter() - started) * 1000, hashlib.sha256(crop.tobytes()).hexdigest(),
+                          hashlib.sha256(tensor.numpy().tobytes()).hexdigest(), self.metadata["image_size"],
+                          (2 if self.metadata["config"].get("inference_hflip",False) else 1)+
+                          (candidate_reading.views if candidate_reading else 0))
+        return self._refine(rgb, reading, started, agreement)

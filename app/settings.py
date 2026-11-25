@@ -9,7 +9,11 @@ from utils.config import PROJECT_ROOT
 
 def load_settings():
     settings = json.loads((PROJECT_ROOT / "config/app.json").read_text(encoding="utf-8"))
-    settings["checkpoint"] = os.environ.get("VISION_IA_CHECKPOINT") or settings["checkpoint"]
+    override = os.environ.get("VISION_IA_CHECKPOINT")
+    if override and (PROJECT_ROOT / Path(override).expanduser()).resolve() != (PROJECT_ROOT / settings['checkpoint']).resolve():
+        settings['checkpoint'] = override
+        if settings.get('material_refiner_calibration'):
+            settings.pop('material_refiner_checkpoint', None)
     return settings
 
 

@@ -7,7 +7,6 @@ textColor = "#152E35"
 font = "sans serif"
 
 [server]
-address = "127.0.0.1"
 maxUploadSize = 10
 
 [browser]

@@ -1,0 +1,21 @@
+{
+  "architecture": "VisionResidual-v2",
+  "image_size": 192,
+  "preprocessing": "letterbox-v2",
+  "channels": [24, 40, 72, 128],
+  "pooling": "avgmax",
+  "dropout": 0.27,
+  "initialization": "random_from_scratch",
+  "normalization": {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]},
+  "augmentation": {"rotation_degrees": 12, "brightness": 0.22, "contrast": 0.22, "color": 0.14, "min_scale": 0.83},
+  "seed": 81,
+  "epochs": 32,
+  "batch_size": 96,
+  "workers": 8,
+  "epoch_samples": 7680,
+  "learning_rate": 0.0012,
+  "scene_fraction": 0.32,
+  "extra_fraction": 0.37,
+  "minimum_original_macro_F1": 0.77,
+  "test_used": false
+}

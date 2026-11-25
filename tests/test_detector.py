@@ -16,8 +16,36 @@ from utils.config import PROJECT_ROOT
 
 
 class DetectorTests(unittest.TestCase):
+    def test_close_view_recovers_an_outline_around_a_partial_detection(self):
+        detector=NeuralDetector.__new__(NeuralDetector)
+        detector.confidence=.211
+        frame=np.full((240,320,3),30,np.uint8)
+        frame[40:190,80:230]=190
+        partial=(106.,68.,195.,161.)
+        base=Detection(partial,.42,Region(crop_box(partial,320,240),'neuronal'))
+        with patch.object(detector,'detect',return_value=[base]):
+            result=detector.detect_close(frame)
+        self.assertEqual(result[0].confidence,base.confidence)
+        np.testing.assert_allclose(result[0].box,[80,40,230,190],atol=2)
+        with patch.object(detector,'detect',return_value=[]):
+            self.assertEqual(detector.detect_close(frame),[])
+
+    def test_close_view_rechecks_a_large_proposal_cut_by_the_frame(self):
+        detector=NeuralDetector.__new__(NeuralDetector)
+        detector.confidence=.211
+        frame=np.zeros((240,320,3),np.uint8)
+        first=Detection((0.,30.,250.,215.),.295,Region((0,20,250,225),'neural'))
+        center=Detection((60.,30.,140.,110.),.26,Region((50,20,150,120),'neural'))
+        with patch.object(detector,'detect',side_effect=[[first],[center]]) as detect:
+            result=detector.detect_close(frame)
+        self.assertEqual(detect.call_count,2)
+        self.assertEqual(result[0].box,(105.,64.,185.,144.))
+        self.assertEqual(result[0].confidence,first.confidence)
+
     def test_nms_and_letterbox_coordinates_outside_center(self):
         detector=NeuralDetector.__new__(NeuralDetector)
+        from training.detector_own import ARCHITECTURE, STRIDES
+        detector.architecture=ARCHITECTURE
         detector.size=512;detector.confidence=.35;detector.nms_iou=.45
         detector._lock=threading.Lock()
         # Frame 400x240: resize 512x307, top padding 102. Object at left.
@@ -27,6 +55,7 @@ class DetectorTests(unittest.TestCase):
         boxes=torch.tensor([[x1*scale_x,y1*scale_y+102,x2*scale_x,y2*scale_y+102],
                             [x1*scale_x+1,y1*scale_y+103,x2*scale_x+1,y2*scale_y+103]])
         detector.model=lambda x:[]
+        detector.model.strides=STRIDES
         with patch('app.detector.decode_predictions',return_value=[(boxes,torch.tensor([.9,.8]))]):
             detections=detector.detect(np.zeros((240,400,3),dtype=np.uint8))
         self.assertEqual(len(detections),1)

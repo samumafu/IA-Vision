@@ -1,10 +1,11 @@
 {
-  "checkpoint": "models/runtime/classifier_B.pth",
+  "checkpoint": "models/runtime/classifier_materials.pth",
   "cpu_threads": 2,
   "low_confidence_threshold": 0.65,
   "localization_mode": "neural",
-  "detector_checkpoint": "models/runtime/detector_D2.pth",
-  "detection_threshold": 0.25,
+  "detector_checkpoint": "models/runtime/detector_D3.pth",
+  "detection_threshold": 0.211,
+  "detection_views": [[512, false], [512, true]],
   "manual_bounds": [
     0.2,
     0.2,
@@ -16,6 +17,11 @@
   "max_upload_mb": 10,
   "max_image_pixels": 16000000,
   "detection_nms_iou": 0.45,
-  "material_candidate_checkpoint": "models/runtime/classifier_materials.pth",
-  "material_candidate_threshold": 0.4
+  "material_candidate_checkpoint": "models/runtime/classifier_scene_mixed.pth",
+  "material_candidate_weight": 0.45,
+  "material_refiner_checkpoint": "models/runtime/classifier_transformer.pth",
+  "material_refiner_calibration": "config/material_transformer_fusion.json",
+  "material_refiner_weight": 0.65,
+  "material_refiner_preserve": ["vidrio"],
+  "material_refiner_preserve_consensus": ["papel", "carton"]
 }

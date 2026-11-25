@@ -5,7 +5,10 @@ from pathlib import Path
 import torch
 from PIL import Image
 
+from training.compact import ARCHITECTURE as RESIDUAL_ARCHITECTURE, build_transform
 from training.data import ImageTransform
+from training.material_encoder import ARCHITECTURE as ENCODER_ARCHITECTURE
+from training.material_transformer import ARCHITECTURE as TRANSFORMER_ARCHITECTURE
 from training.runtime import choose_device, load_checkpoint
 from utils.config import PROJECT_ROOT, data_root
 from utils.dataset import sha256
@@ -13,7 +16,7 @@ from utils.dataset import sha256
 
 def probabilities_from_logits(logits):
     if logits.ndim != 2 or logits.shape[1] != 6 or not torch.isfinite(logits).all():
-        raise ValueError("La CNN debe producir seis logits finitos por imagen.")
+        raise ValueError("El clasificador debe producir seis logits finitos por imagen.")
     return torch.softmax(logits, dim=1)
 
 
@@ -49,11 +52,10 @@ def predict_image(checkpoint_path, image_path, device="cpu"):
     protect_test_image(image_path)
     device = choose_device(device)
     model, checkpoint = load_checkpoint(checkpoint_path, device)
-    if checkpoint["architecture"] == "VisionResidual-v2":
-        from training.compact import build_transform
-        transform = build_transform(checkpoint["config"], training=False)
+    if checkpoint['architecture'] in (RESIDUAL_ARCHITECTURE, TRANSFORMER_ARCHITECTURE, ENCODER_ARCHITECTURE):
+        transform = build_transform(checkpoint['config'], training=False)
     else:
-        transform = ImageTransform(training=False, normalization=checkpoint["config"]["normalization"])
+        transform = ImageTransform(training=False, normalization=checkpoint['config']['normalization'])
     with Image.open(image_path) as image:
         tensor = transform(image).unsqueeze(0).to(device)
     with torch.inference_mode():

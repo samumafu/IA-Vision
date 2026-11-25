@@ -31,5 +31,16 @@ class MaterialGuardTests(unittest.TestCase):
         with patch.object(self.service.model,'forward',side_effect=AssertionError('Fallback should not run')):
             self.assertIs(self.service.classify(self.frame),candidate)
 
+    def test_weighted_policy_uses_both_distributions_even_at_low_confidence(self):
+        refined = 'models/runtime/classifier_materials.pth'
+        service = InferenceService(refined, candidate_checkpoint='models/runtime/classifier_B.pth',
+                                   candidate_threshold=1., candidate_weight=.55)
+        primary = InferenceService(refined).classify(self.frame)
+        blended = service.classify(self.frame)
+        for label in service.classes:
+            expected = .45 * primary.probabilities[label] + .55 * self.original.probabilities[label]
+            self.assertAlmostEqual(blended.probabilities[label], expected)
+        self.assertEqual(blended.views, primary.views + self.original.views)
+
 
 if __name__=='__main__':unittest.main()

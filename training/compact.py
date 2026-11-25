@@ -93,7 +93,9 @@ class CompactTransform:
             image = ImageOps.mirror(image)
         angle = self.options.get("rotation_degrees", 20)
         clean_layout=self.options.get("layout")=="clean"
-        image = image.rotate(random.uniform(-angle, angle), Image.Resampling.BILINEAR, expand=not clean_layout, fillcolor=(128, 128, 128))
+        camera_layout = self.options.get("layout") == "camera"
+        image = image.rotate(random.uniform(-angle, angle), Image.Resampling.BILINEAR,
+                             expand=not (clean_layout or camera_layout), fillcolor=(128, 128, 128))
         for option, enhancer in (("brightness", ImageEnhance.Brightness), ("contrast", ImageEnhance.Contrast), ("color", ImageEnhance.Color)):
             amount = self.options.get(option, .25)
             image = enhancer(image).enhance(random.uniform(1-amount, 1+amount))
@@ -103,6 +105,8 @@ class CompactTransform:
             image = image.filter(ImageFilter.GaussianBlur(random.uniform(.2, .8)))
         if clean_layout and random.random()>=self.options.get("scale_probability",.2):
             canvas=image.resize((size,size),Image.Resampling.BILINEAR)
+        elif camera_layout and random.random() >= self.options.get("scale_probability", .2):
+            canvas = ImageOps.pad(image, (size, size), method=Image.Resampling.BILINEAR, color=(128, 128, 128))
         else:
             factor = random.uniform(self.options.get("min_scale", .8), 1.)
             image = ImageOps.contain(image, (max(16, round(size*factor)),)*2, method=Image.Resampling.BILINEAR)
@@ -121,7 +125,9 @@ class CompactTransform:
 
 
 def build_transform(config, training=False):
-    if config.get("architecture") == ARCHITECTURE:
+    from training.material_encoder import ARCHITECTURE as ENCODER_ARCHITECTURE
+    from training.material_transformer import ARCHITECTURE as TRANSFORMER_ARCHITECTURE
+    if config.get("architecture") in (ARCHITECTURE, TRANSFORMER_ARCHITECTURE, ENCODER_ARCHITECTURE):
         return CompactTransform(config, training)
     from training.data import ImageTransform
     return ImageTransform(training, config["normalization"], config.get("augmentation"))

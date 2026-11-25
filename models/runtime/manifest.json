@@ -34,6 +34,17 @@
     "initial_state_sha256": "b408474c9e505a059ad36674a476d3f8421301de9d6817811be703ba0e3e217c",
     "confidence": 0.25,
     "nms_iou": 0.45,
+    "current_inference": {
+      "views_size_and_horizontal_flip": [[512, false], [640, false], [512, true]],
+      "confidence": 0.27,
+      "nms_iou": 0.45,
+      "validation_images": 233,
+      "validation_objects": 684,
+      "precision": 0.46747967479674796,
+      "recall": 0.3362573099415205,
+      "mAP50": 0.33823948783204827,
+      "mAP50_95": 0.18446822143997382
+    },
     "test_used_for_selection": false,
     "continuation_of_own_random_initialization": true,
     "whole_object_validation": {
@@ -53,8 +64,8 @@
     "foreign_pretrained_weights": false,
     "continued_own_classifier_B": true,
     "epoch": 14,
-    "fallback_classifier": "classifier_B.pth",
-    "minimum_confidence": 0.4,
+    "historical_fallback_classifier": "classifier_B.pth",
+    "historical_minimum_confidence": 0.4,
     "validation": {
       "original": {
         "accuracy": 0.7737556561085973,
@@ -68,6 +79,107 @@
         "plastic_recall": 0.08673469387755102,
         "images": 308
       }
+    }
+  },
+  "classifier_scene.pth": {
+    "architecture": "VisionResidual-v2",
+    "sha256": "487f5dcb0b2c5fe7d6edc2cf902e5b115fa4ad2952111d4a8cac663097c2d6fd",
+    "source_checkpoint": "runs/scene_quality/colab_classifier/best_scene.pth",
+    "trained_in_project": true,
+    "foreign_pretrained_weights": false,
+    "initialization": "random_from_scratch",
+    "initial_state_sha256": "a4de1476d1f22385a61b7f583dc5974096430cc81527da34ace4a620cbecd17a",
+    "parameters": 606210,
+    "epoch": 24,
+    "policy": {
+      "scene_weight": 0.35,
+      "refined_checkpoint": "classifier_materials.pth",
+      "refined_weight": 0.65,
+      "blend": "weighted material probabilities",
+      "detector_crop": "square, 12 percent margin per side"
+    },
+    "validation": {
+      "original": {"objects": 884, "accuracy": 0.7794117647058824, "macro_F1": 0.7875286617285582},
+      "TACO_legacy": {"objects": 308, "accuracy": 0.43506493506493504, "macro_F1": 0.27873279391431205},
+      "TACO_strict": {"objects": 309, "accuracy": 0.4368932038834951, "macro_F1": 0.2815408357075024},
+      "joint_IoU50_legacy": {"objects": 409, "correct": 76, "recall": 0.18581907090464547},
+      "joint_IoU50_app_primary_legacy": {"objects": 409, "correct": 46, "recall": 0.11246943765281174},
+      "test_used_for_selection": false
+    }
+  },
+  "detector_D3.pth": {
+    "architecture": "VisionLocaliza-D3",
+    "sha256": "315adfcb35e67d7d715a170ec31e456200149e61083c2014852478dd2fbbc47b",
+    "source_checkpoint": "runs/intensive/d3-final.pth",
+    "trained_in_project": true,
+    "foreign_pretrained_weights": false,
+    "initialization": "random_from_scratch",
+    "initial_state_sha256": "65e7b41aea757e47cf90cdd90cc4d0420c733c4c57c04c718ac694d031c78c9e",
+    "parameters": 338408,
+    "image_size": 512,
+    "epoch": 40,
+    "training_images": {"TACO_and_MJU": 1706, "SWiM3": 4064},
+    "current_inference": {
+      "views_size_and_horizontal_flip": [[512, false], [512, true]],
+      "confidence": 0.211,
+      "nms_iou": 0.45,
+      "validation_images": 233,
+      "validation_objects": 684,
+      "precision": 0.5187265917602997,
+      "recall": 0.40497076023391815,
+      "mAP50": 0.38410387969323095,
+      "mAP50_95": 0.1948988344129429
+    },
+    "test_used_for_selection": false
+  },
+  "classifier_scene_mixed.pth": {
+    "architecture": "VisionResidual-v2",
+    "sha256": "d87b5f9d7943783e0d68c6c56fa4a13d13e1fc3896d88ff65880f067e740232c",
+    "source_checkpoint": "runs/intensive/mixed-scene.pth",
+    "trained_in_project": true,
+    "foreign_pretrained_weights": false,
+    "initialization": "random_from_scratch",
+    "initial_state_sha256": "bdce977699db4a975916c4696437c79515579d1842d1a823fcb5167039b01ded",
+    "parameters": 783326,
+    "image_size": 192,
+    "epoch": 21,
+    "additional_training": {"MWCD_images": 11440, "SWiM3_plastic_crops": 3103, "SWiM3_metal_crops": 1943},
+    "policy": {"scene_weight": 0.45, "refined_checkpoint": "classifier_materials.pth", "refined_weight": 0.55},
+    "validation": {
+      "original": {"objects": 884, "accuracy": 0.7816742081447964, "macro_F1": 0.7895892436135021},
+      "TACO_legacy": {"objects": 308, "accuracy": 0.5292207792207793, "macro_F1": 0.32678856683618734},
+      "TACO_strict": {"objects": 309, "accuracy": 0.5533980582524272, "macro_F1": 0.3352992829843015},
+      "joint_IoU50_legacy": {"objects": 409, "correct": 97, "recall": 0.2371638141809291},
+      "joint_IoU50_app_primary_legacy": {"objects": 409, "correct": 56, "recall": 0.13691931540342298},
+      "test_used_for_selection": false
+    }
+  },
+  "classifier_transformer.pth": {
+    "architecture": "VisionMaterial-Transformer",
+    "sha256": "0067e549672ad721b6d87ad93b82b315c8850ce4c3125d1cf0379bb56ed348e3",
+    "source_checkpoint": "Vision-IA/transformer/transformer_L4/best_balanced.pth",
+    "trained_in_project": true,
+    "foreign_pretrained_weights": false,
+    "initialization": "random_from_scratch",
+    "initial_state_sha256": "b270b55765014d61dc0f18942fced23e5b8e4bdcb96b0e21e5fab9850e9a5625",
+    "image_size": 160,
+    "parameters": 344478,
+    "epoch": 41,
+    "GPU": "NVIDIA L4",
+    "policy": {
+      "calibration": "config/material_transformer_fusion.json",
+      "calibration_sha256": "235fd1482bcbf6ed40d865b727fed7289261bb0acb2b05efca7af3532ad9cac1",
+      "calibrated_weight": 0.65,
+      "preserved_CNN_predictions": ["vidrio"],
+      "preserved_CNN_agreement": ["papel", "carton"]
+    },
+    "validation": {
+      "original": {"objects": 884, "accuracy": 0.8020361990950227, "macro_F1": 0.8155253334962455},
+      "TACO_legacy": {"objects": 308, "accuracy": 0.6363636363636364, "macro_F1": 0.3658734061705717},
+      "TACO_strict": {"objects": 309, "accuracy": 0.656957928802589, "macro_F1": 0.37621592209269344},
+      "joint_IoU50_legacy": {"objects": 409, "correct": 116, "recall": 0.28361858190709044},
+      "joint_IoU50_app_primary_legacy": {"objects": 409, "correct": 71, "recall": 0.17359413202933985},
+      "test_used_for_selection": false
     }
   }
 }

@@ -1,14 +1,12 @@
 """Browser camera frames sent through Streamlit's existing HTTPS/WebSocket channel."""
 import base64
 from collections import deque
-from dataclasses import replace
 from pathlib import Path
 import time
 
 import streamlit.components.v1 as components
 
-from app.detector import ObjectTracker, box_iou, crop_box
-from app.localization import Region
+from app.detector import LIVE_TRACK_MAX_AGE, ObjectTracker, box_iou, center_detection
 from app.recycling import guidance
 from app.vision import decode_image
 
@@ -31,10 +29,24 @@ class BrowserRecognition:
         self.pending_candidate=None
         self.zoom_retry_at=0
 
-    def _detect_live(self, frame, detector):
+    def _tracked_box(self, hint, frame):
+        if not isinstance(hint,dict) or type(hint.get('track_id')) is not int:
+            return None
+        if hint['track_id'] not in self.tracker.tracks or time.monotonic()-self.tracker.last_seen>LIVE_TRACK_MAX_AGE:
+            return None
+        box=hint.get('box')
+        if not isinstance(box,list) or len(box)!=4 or any(type(v) not in (int,float) or not 0<=v<=1 for v in box):
+            return None
+        x1,y1,x2,y2=box
+        if x2<=x1 or y2<=y1:return None
+        height,width=frame.shape[:2]
+        return (x1*width,y1*height,x2*width,y2*height)
+
+    def _detect_live(self, frame, detector, tracked_box=None):
         threshold=getattr(detector,'confidence',.25)
         minimum=min(threshold,CAMERA_CANDIDATE_CONFIDENCE)
-        proposals=detector.detect(frame,confidence=minimum)
+        detect=getattr(detector,'detect_close',detector.detect)
+        proposals=detect(frame,confidence=minimum)
         detections=[item for item in proposals if item.confidence>=threshold]
         if detections:
             self.pending_candidate=None
@@ -44,9 +56,10 @@ class BrowserRecognition:
         now=time.monotonic()
         height,width=frame.shape[:2]
         active=next(iter(self.tracker.tracks.values()),None)
-        if active and now-self.tracker.last_seen<1.1:
+        reference=tracked_box if tracked_box is not None else active['box'] if active and now-self.tracker.last_seen<1.1 else None
+        if reference is not None:
             for proposal in proposals:
-                if box_iou(proposal.box,active['box'])>=.5:
+                if box_iou(proposal.box,reference)>=.5:
                     self.pending_candidate=None
                     return [proposal]
 
@@ -72,28 +85,14 @@ class BrowserRecognition:
             if box_iou(candidate.box,previous[0])>=.5:
                 readings=previous[3]+1
         self.pending_candidate=(candidate.box,now,self.sequence,readings)
-        if active and now-self.tracker.last_seen<1.1 and box_iou(candidate.box,active['box'])>=.5:
+        if reference is not None and box_iou(candidate.box,reference)>=.5:
             return [candidate]
         required=2 if candidate.confidence>=threshold else 3
         return [candidate] if readings>=required else []
 
     @staticmethod
     def _center_candidate(frame, detector, minimum):
-        height,width=frame.shape[:2]
-        left,top=round(width*.14),round(height*.14)
-        zoom=frame[top:height-top,left:width-left].copy()
-        zoom_height,zoom_width=zoom.shape[:2]
-        if min(zoom_height,zoom_width)<32:
-            return None
-        margin=max(2,min(width,height)*.012)
-        for detection in detector.detect(zoom,confidence=minimum):
-            x1,y1,x2,y2=detection.box
-            if min(x1,y1,zoom_width-x2,zoom_height-y2)<margin:
-                continue
-            box=(x1+left,y1+top,x2+left,y2+top)
-            region=Region(crop_box(box,width,height),'neuronal-VisionLocaliza-D2')
-            return replace(detection,box=box,region=region)
-        return None
+        return center_detection(frame,detector.detect,minimum)
 
     def consume(self,payload,detector,classifier):
         if not isinstance(payload,dict):return False
@@ -116,7 +115,8 @@ class BrowserRecognition:
             encoded=payload.get('image')
             if not isinstance(encoded,str) or len(encoded)>2_000_000:raise ValueError('Fotograma demasiado grande.')
             frame=decode_image(base64.b64decode(encoded,validate=True),max_bytes=1_500_000,max_pixels=640*640)
-            objects=self.tracker.update(frame,self._detect_live(frame,detector),classifier)
+            tracked_box=self._tracked_box(payload.get('tracking'),frame)
+            objects=self.tracker.update(frame,self._detect_live(frame,detector,tracked_box),classifier,tracked_box=tracked_box)
             self.objects=tuple(objects);self.running=True
             if objects:
                 item=objects[0];height,width=frame.shape[:2]

@@ -10,16 +10,21 @@ from app.vision import InferenceService
 from utils.config import PROJECT_ROOT, data_root
 
 
-@st.cache_resource(show_spinner="Cargando la CNN propia en CPU…", max_entries=2)
+@st.cache_resource(show_spinner="Cargando el clasificador de materiales…", max_entries=2)
 def get_model(path, modified_ns, size_bytes, cpu_threads=2, candidate_path=None,
-              candidate_modified_ns=None,candidate_size_bytes=None,candidate_threshold=.4):
-    return InferenceService(path,cpu_threads,candidate_path,candidate_threshold)
+              candidate_modified_ns=None,candidate_size_bytes=None,candidate_threshold=.4,candidate_weight=None,
+              refiner_path=None, refiner_modified_ns=None, refiner_size_bytes=None, refiner_weight=None,
+              refiner_preserve=(), refiner_preserve_consensus=(), calibration_path=None,
+              calibration_modified_ns=None, calibration_size_bytes=None):
+    return InferenceService(path,cpu_threads,candidate_path,candidate_threshold,candidate_weight,
+                            refiner_path,refiner_weight,refiner_preserve,calibration_path,refiner_preserve_consensus)
 
 
 @st.cache_resource(show_spinner="Cargando el detector neuronal propio…", max_entries=2)
-def get_detector(path, modified_ns, size_bytes, cpu_threads=2, confidence=.35, nms_iou=.45):
+def get_detector(path, modified_ns, size_bytes, cpu_threads=2, confidence=.35, nms_iou=.45,
+                 views=()):
     from app.detector import NeuralDetector
-    return NeuralDetector(path,cpu_threads,confidence,nms_iou)
+    return NeuralDetector(path,cpu_threads,confidence,nms_iou,views)
 
 
 @st.cache_resource

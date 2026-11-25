@@ -125,7 +125,7 @@ class DetectionDataset(Dataset):
             if verify and hashlib.sha256(data).hexdigest()!=row['sha256']:raise ValueError(f'Imagen modificada: {path}')
             with Image.open(path) as source:rgb=np.asarray(source.convert('RGB'))
             h,w=rgb.shape[:2]
-            limit=640 if split=='train' else config['image_size']
+            limit=config.get('train_decode_max_side',640) if split=='train' else config['image_size']
             if max(h,w)>limit:
                 ratio=limit/max(h,w)
                 rgb=cv2.resize(rgb,(round(w*ratio),round(h*ratio)),interpolation=cv2.INTER_AREA)
@@ -146,10 +146,10 @@ class DetectionDataset(Dataset):
         return image_tensor(image),torch.as_tensor(boxes,dtype=torch.float32),row['id']
 
 
-def collate_detection(batch):
+def collate_detection(batch,strides=STRIDES):
     images=torch.stack([b[0] for b in batch])
     boxes=[b[1] for b in batch]
     size=images.shape[-1]
-    shapes=[torch.empty((len(batch),6,size//s,size//s)) for s in STRIDES]
-    targets,collisions=make_targets(shapes,boxes)
+    shapes=[torch.empty((len(batch),6,size//s,size//s)) for s in strides]
+    targets,collisions=make_targets(shapes,boxes,strides)
     return images,boxes,[b[2] for b in batch],targets,collisions
