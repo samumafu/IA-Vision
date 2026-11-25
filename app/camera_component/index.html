@@ -6,6 +6,7 @@
 .controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
 button,select{font:inherit;border:1px solid #c9d9d2;border-radius:8px;padding:10px 14px;background:#fff;color:#183c36;min-height:42px}
 button{cursor:pointer}button.primary{background:#157e75;border-color:#157e75;color:white}button:disabled{opacity:.45;cursor:default}
+#flash[aria-pressed="true"]{background:#fff1ce;border-color:#d78c14}
 select{flex:1;min-width:150px;max-width:100%}button:focus-visible,select:focus-visible{outline:3px solid #58a99e;outline-offset:2px}
 .stage{position:relative;aspect-ratio:4/3;background:#e8efeb;border-radius:12px;overflow:hidden;width:100%}
 video,canvas.overlay{display:block;width:100%;height:100%;position:absolute;inset:0;object-fit:contain}
@@ -21,12 +22,15 @@ video,canvas.overlay{display:block;width:100%;height:100%;position:absolute;inse
 .bin-dot.green{background:#28804d}
 @media(max-width:560px){.camera-layout{grid-template-columns:minmax(0,1fr);gap:10px}}
 #notice{font-size:13px;color:#55716a;margin:8px 0 0;min-height:18px}#notice.error{color:#a82b29}
+#flash-status{font-size:13px;color:#a82b29;margin:0 0 8px}
 [hidden]{display:none!important}
 </style></head>
 <body>
 <div class="camera-layout"><div>
 <div class="controls"><button id="start" class="primary">Activar cámara</button><button id="stop" disabled>Detener</button>
+<button id="flash" type="button" aria-label="Flash" aria-pressed="false" hidden disabled>Encender flash</button>
 <select id="device" aria-label="Cámara"><option value="">Cámara automática</option></select></div>
+<p id="flash-status" role="status" hidden></p>
 <div class="stage" id="stage"><video id="video" autoplay playsinline muted></video><canvas class="overlay" id="overlay"></canvas>
 <div class="empty" id="empty">Activa la cámara para reconocer un residuo.</div></div>
 <p id="notice" role="status" aria-live="polite"></p>
@@ -43,7 +47,8 @@ const $=id=>document.getElementById(id);
 const video=$('video'),overlay=$('overlay'),pen=overlay.getContext('2d');
 const capture=document.createElement('canvas'),capturePen=capture.getContext('2d');
 const motion=document.createElement('canvas'),motionPen=motion.getContext('2d',{willReadFrequently:true});
-let media=null,streamId='',sequence=0,pending=null,lastSent=0,opening=false,height=0;
+let media=null,streamId='',sequence=0,pending=null,lastSent=0,opening=null,height=0;
+let flashTrack=null,flashOn=false,flashPending=false;
 let track=null,displayBox=null,lastVideoFrame=-1,presentedFrames=0,resultKey='';
 let enabled=true,interval=250;
 let guideBox=[.16,.10,.84,.90];
@@ -78,7 +83,41 @@ function clearTrack() {
   track=null;
   displayBox=null;
 }
-function buttons(){$('start').disabled=!!media||opening||!enabled;$('stop').disabled=!media&&!opening;}
+function buttons(){
+  $('start').disabled=!!media||opening||!enabled;
+  $('stop').disabled=!media&&!opening;
+  const flash=$('flash');
+  flash.hidden=!flashTrack;
+  flash.disabled=!flashTrack||flashPending||!enabled;
+  flash.setAttribute('aria-pressed',String(flashOn));
+  flash.textContent=flashOn?'Apagar flash':'Encender flash';
+}
+function flashNotice(message=''){
+  $('flash-status').textContent=message;
+  $('flash-status').hidden=!message;
+  resize();
+}
+async function toggleFlash(){
+  const camera=flashTrack;
+  if(!camera||flashPending||!enabled)return;
+  flashPending=true;buttons();flashNotice();
+  const next=!flashOn;
+  try{
+    const {torch,advanced=[],...constraints}=camera.getConstraints();
+    // Keep the camera's resolution and device selection when changing the torch.
+    const cameraOptions=advanced.map(({torch,...settings})=>settings)
+      .filter(settings=>Object.keys(settings).length);
+    await camera.applyConstraints({...constraints,advanced:[...cameraOptions,{torch:next}]});
+    if(camera!==flashTrack)return;
+    const actual=camera.getSettings().torch;
+    flashOn=typeof actual==='boolean'?actual:next;
+    if(flashOn!==next)flashNotice('No se pudo cambiar el flash de esta cámara.');
+  }catch{
+    if(camera===flashTrack)flashNotice('No se pudo cambiar el flash de esta cámara.');
+  }finally{
+    if(camera===flashTrack){flashPending=false;buttons();resize();}
+  }
+}
 async function devices(){
   if(!navigator.mediaDevices?.enumerateDevices)return;
   const selected=$('device').value,list=await navigator.mediaDevices.enumerateDevices();
@@ -89,7 +128,8 @@ async function devices(){
 function stop(report=true){
   const previous=streamId;
   if(media)media.getTracks().forEach(track=>track.stop());
-  media=null;video.srcObject=null;pending=null;opening=false;lastVideoFrame=-1;
+  media=null;video.srcObject=null;pending=null;opening=null;lastVideoFrame=-1;
+  flashTrack=null;flashOn=false;flashPending=false;flashNotice();
   clearTrack();showMaterial();
   pen.clearRect(0,0,overlay.width,overlay.height);$('empty').hidden=false;
   if(report&&previous)send({event:'stopped',stream_id:previous,sequence:++sequence});
@@ -98,18 +138,29 @@ function stop(report=true){
 async function start(){
   if(opening||media)return;
   if(!navigator.mediaDevices?.getUserMedia){notice('Abre la aplicación con HTTPS y un navegador con acceso a cámara.',true);return;}
-  opening=true;buttons();notice('Autoriza la cámara en tu navegador.');
+  const request={};
+  opening=request;buttons();notice('Autoriza la cámara en tu navegador.');
   const selected=$('device').value;
   try{
     const constraints={width:{ideal:1280,max:1920},height:{ideal:720,max:1080},frameRate:{ideal:30,max:30}};
     if(selected)constraints.deviceId={exact:selected};else constraints.facingMode={ideal:'environment'};
     const acquired=await navigator.mediaDevices.getUserMedia({video:constraints,audio:false});
-    if(!opening){acquired.getTracks().forEach(track=>track.stop());return;}
+    if(opening!==request){acquired.getTracks().forEach(track=>track.stop());return;}
     media=acquired;streamId=crypto.randomUUID();sequence=0;pending=null;lastSent=0;
-    video.srcObject=media;await video.play();opening=false;$('empty').hidden=true;buttons();notice('');
+    video.srcObject=media;await video.play();
+    if(media!==acquired)return;
+    const camera=acquired.getVideoTracks()[0];
+    const torch=camera.getCapabilities?.()?.torch;
+    if(torch===true||(Array.isArray(torch)&&torch.includes(true)&&torch.includes(false))){
+      flashTrack=camera;
+      flashOn=camera.getSettings().torch===true;
+    }
+    camera.addEventListener('ended',()=>{if(media===acquired)stop();},{once:true});
+    opening=null;$('empty').hidden=true;buttons();notice('');
     $('stage').style.aspectRatio=`${video.videoWidth}/${video.videoHeight}`;
-    await devices();resize();
+    await devices().catch(()=>{});resize();
   }catch(error){
+    if(opening!==request)return;
     stop(false);
     const messages={NotAllowedError:'Autoriza el acceso a la cámara para usar el video.',NotFoundError:'No se encontró una cámara. Conéctala y vuelve a intentar.',NotReadableError:'La cámara está ocupada. Cierra otras aplicaciones que la estén usando.',OverconstrainedError:'Esta cámara no admite la configuración solicitada. Prueba otra cámara.'};
     notice(messages[error.name]||'No se pudo abrir la cámara. Comprueba su conexión y vuelve a intentar.',true);
@@ -222,6 +273,7 @@ window.addEventListener('message',event=>{
   buttons();resize();
 });
 $('start').addEventListener('click',start);$('stop').addEventListener('click',()=>stop());
+$('flash').addEventListener('click',toggleFlash);
 $('device').addEventListener('change',async()=>{if(media){stop();await start();}});
 window.addEventListener('pagehide',()=>stop(false));window.addEventListener('beforeunload',()=>stop(false));
 new ResizeObserver(resize).observe(document.body);
